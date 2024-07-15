@@ -1,0 +1,1145 @@
+﻿ {% extends "base.html" %}
+
+ {% block title %}TAISEIオンライン実験ノート{% endblock %}
+ {% block content %}
+
+<!--ImageObject用-->                   
+<style>
+
+    .resizable {
+        position: absolute;
+        border: 2px solid transparent; /* デフォルトで透明にする */
+        cursor: move;
+    }
+
+        .resizable img {
+            display: block;
+            max-width: 100%;
+            max-height: 100%;
+        }
+
+    .handle {
+        position: absolute;
+        width: 10px;
+        height: 10px;
+        background: #000;
+        cursor: se-resize;
+        display: none; /* デフォルトで非表示 */
+    }
+
+
+    .resizable:hover {
+        border: 2px solid #000; /* ホバー時に表示 */
+    }
+
+    .resizable:hover .handle {
+        display: block; /* ホバー時に表示 */
+    }
+
+    .handle.br {
+        right: -5px;
+        bottom: -5px;
+    }
+    
+    #textArea {
+        overflow: hidden; /* 子要素が外に出ないようにする */
+    }
+</style>
+
+<style>
+    .custom-width {
+        width: 200px;
+    }
+
+    .form-inline .form-group {
+        display: flex;
+        align-items: center;
+    }
+
+        .form-inline .form-group label {
+            margin-right: 10px;
+        }
+
+    .center-container {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        width: 100%; /* 親要素の幅を100%に設定 */
+    }
+
+    .form-inline {
+        margin-bottom: 0; /* 下部余白をなくす */
+    }
+
+    .tc-wrap {
+        height: auto !important; /* editorのtable調整用 height: 100%; を上書きして auto に変更 */
+    }
+</style>
+
+
+<body class="bg-light">
+    <!--容量超過の場合、アップロード出来ないメッセージを表示する-->
+    {% if messages %}
+    <ul class="messages">
+        {% for message in messages %}
+        <li{% if message.tags %} class="{{ message.tags }}" {% endif %}>
+            {{ message }}</li>
+            {% endfor %}
+    </ul>
+    {% endif %}
+
+    <!--CSSあとでいい感じにする★-->
+    <div class="d-flex justify-content-center mt-0">
+        <div class="center-container flex-column">
+            <!-- 本日の日付の表示 -->
+            <div class="form-inline">
+                <div class="form-group">
+                    <label for="currentDateLabel">本日の日付</label><!--jsで表示-->
+                    <div id="currentDate" style="margin-top: 1px; margin-left: 1px;"></div>
+                </div>
+            </div>
+
+            {% if is_edit %}
+            <!-- 編集の場合の表示 -->
+            <!-- 実験日の表示 -->
+            <div class="form-inline">
+                <div class="form-group">
+                    <label for="research_at">実験日付</label>
+                    <p id="research_at" style="text-align: center; margin-top: 16px;">{{ record.research_at|date:"Y/m/d" }}</p><!--実験日の表示-->
+                </div>
+            </div>
+
+            {% else %}
+            <!-- 新規作成の場合の表示 -->
+            <!-- 実験日の設定フォーム 新規のみ設定可能 -->
+            <form method="post" class="form-inline mt-1">
+                {% csrf_token %}
+                <div class="form-group">
+                    <label for="research_at">実験日付</label>
+                    <input type="date" id="research_at" name="research_at" class="form-control custom-width" style="margin-left: 10px;" value="{{ today_date }}">
+                </div>
+            </form>
+            {% endif %}
+
+        </div>
+    </div>
+
+    <p id="messageForInsertImages" style="display: none; text-align: center; width: max-content; margin: 0 auto;" class="alert alert-primary mt-1">画像を挿入したい位置でクリックしてください。</p>
+
+    <!--editorjsのために入力をfalseにした-->
+    <div id="editor" class="m-3">
+        <div id="container">
+            <div class="container" id="imageContainer">
+                <!--imageがあれば挿入する、無ければしない-->
+                {% if record.image_div_field %}
+                {{ record.image_div_field|safe }}
+                {% endif %}
+            </div>
+
+            <div id="textArea-container">
+                <div id="textArea"></div>
+            </div>
+            <canvas id="drawingCanvas" width=800 height=826></canvas>
+        </div>
+        <div id="controls_m" style="display: flex; flex-wrap: wrap; align-items: center; justify-content: space-around;">
+
+            <button id="textModeBtn" class="btn btn-custom inactive">文字</button>
+            <button id="drawModeBtn" class="btn btn-custom">描画</button>
+            <input type="color" id="colorPicker" value="#000000">
+            <!--<button id="eraserModeBtn" class="btn btn-custom">消しゴムモード</button>-->
+            <button id="insertImageButton" class="btn btn-custom">画像</button>
+            <input type="file" id="imageInput" style="display: none;" accept="image/*">
+
+            <!--これを消すときはスクリプトも共に消す　でないとエラーが出る-->
+            <button onclick="showConfirmation()" hasClicked='false' id="buttonToTriggerNavigation" class="btn btn-custom">一覧から画像挿入</button>
+            <a id="insertImageFromList" style="display: none;" class="btn btn-custom" href="{% url 'image_list' %}?noteId=" class="d-flex">
+                DBより挿入
+            </a>
+
+            <!--ImageObjectの挿入ボタン-->
+            <input type="file" id="fileInput" accept="image/*">
+
+            <button id="saveBtn" class="btn btn-custom" data-pk="{{ record.pk }}">保存</button>
+            <!--<button id="insertFlaskImageButton_m" class="btn btn-custom">フラスコ画像を挿入</button>-->
+
+        </div>
+
+    </div>
+
+    <div id="savedContent" class="m-3"></div>
+
+    <!-- /* 2024.05.04 Add Start */ -->
+    <script>
+        const editableDiv = document.getElementById("textArea");
+        const canvasArea = document.getElementById("drawingCanvas");
+        const ctx = canvasArea.getContext('2d');
+
+        // テキスト入力を監視
+        editableDiv.addEventListener("keyup", handleInput);
+        editableDiv.addEventListener("paste", handleInput);
+        editableDiv.addEventListener("cut", handleInput);
+
+        // テキストエリアサイズ調整
+        function handleInput(e) {
+            setTimeout(() => { // setTimeoutを使用して、DOMの更新を待つs
+                updateHeight();
+                // キャンバスの高さも調整
+                adjustCanvasHeight(editableDiv, canvasArea, ctx);
+            }, 0);
+        }
+
+        // 高さ調整の関数
+        function updateHeight() {
+            if (editableDiv.scrollHeight > 800) {
+                adjustCanvasHeight(editableDiv, canvasArea, ctx);
+                editableDiv.style.height = 'auto'; // コンテンツが800pxを超える場合、高さを自動調整
+            } else {
+                adjustCanvasHeight(editableDiv, canvasArea, ctx);
+                editableDiv.style.height = '800px'; // コンテンツが800px以下の場合、高さを800pxに固定
+            }
+        }
+
+        // 描画エリアサイズ調整
+        function adjustCanvasHeight(editableDiv, canvas, ctx) {
+            // 現在の描画エリアを保存
+            const savedImageData = ctx.getImageData(0, 0, canvas.width, canvas.scrollHeight);
+            // 描画エリアをテキストエリアに合わせて調整
+            canvas.setAttribute('height', editableDiv.scrollHeight);
+            // 保存した内容をCanvasに戻す（再描画）
+            ctx.putImageData(savedImageData, 0, 0);
+        }
+    </script>
+    <script>
+        // ドキュメントロード時
+        document.addEventListener("DOMContentLoaded", function () {
+            canvas.style.zIndex = 999;            //初期でcanvasの表示を前面にする
+            canvas.style.pointerEvents = 'none'; // キャンバスへのインタラクションを無効化する
+
+            // 初期ロード時も高さを更新
+            updateHeight();
+
+        });
+    </script>
+    <!-- /* 2024.05.04 Add End */ -->
+
+    <script>
+        //********** Cycnus script starts here **********//
+        //  テキストエリア内を監視する関数。画像が挿入されたときにリサイズを行なっている。★もういらないかも★
+        const containerObserver = () => {
+            const imagesNum = 0;
+            const target = document.getElementById("textArea");
+            const observer = new MutationObserver(records => {
+                records.forEach(record => {
+                    if (record.type === 'childList' || record.type === 'characterData' || record.type === 'subtree') {
+                        const targetImages = target.querySelectorAll('img');
+                        if (targetImages.length == imagesNum) { return };
+                        imageModifier(targetImages);
+                    }
+                });
+            });
+
+            observer.observe(target, {
+                childList: true,
+                characterData: true,
+                subtree: true,
+            });
+        }
+
+        // 画像をリサイズする関数
+        const imageModifier = (targetImages) => {
+            targetImages.forEach(img => {
+                img.classList.add('resizeable');
+            });
+        };
+
+        // 画像を保存するための確認ダイアログを表示する関数
+        const showConfirmation = () => {
+            const userResponse = confirm("画像一覧より画像挿入するには、ノートを一度保存する必要があります。保存しますか？");
+            if (userResponse) {
+                alert("保存しました!");
+                const navigationButton = document.getElementById('buttonToTriggerNavigation')
+                navigationButton.setAttribute('hasclicked', 'true');
+
+                const insertImageFromListTarget = document.getElementById('insertImageFromList');
+
+                const saveButton = document.getElementById('saveBtn');
+                saveButton.click();
+
+                const insertImageHandler = (url) => {
+                    if (url !== document.getElementById('insertImageFromList').href) {
+                        // ポーリングを行い新規のIDがDOMより取得できた際に、クリックイベントを発火させる
+                        const navigationATag = document.getElementById('insertImageFromList');
+                        navigationATag.click();
+                    } else {
+                        sleepFunction(200).then(() => {
+                            insertImageHandler(url);
+                        });
+                    }
+                }
+                insertImageHandler(insertImageFromListTarget.href);
+            } else {
+                alert("保存しませんでした。");
+                return
+            }
+        }
+
+        // 保存ボタンが押された際に、新規作成されたIDを取得し、リンク先を更新する関数
+        const idTracker = (newId) => {
+            const insertImageFromListTarget = document.getElementById('insertImageFromList');
+            const url = insertImageFromListTarget.href.split('/').slice(0, -2);
+
+            if (url[url.length - 1] === 'image?noteId=') {
+                url.push(`edit/${newId}`);
+            } else {
+                url.push(newId);
+            }
+            insertImageFromListTarget.href = url.join('/');
+        }
+
+        // 保存ボタンを押した際に数秒まつ用途の関数
+        const sleepFunction = (ms) => {
+            return new Promise(resolve => setTimeout(resolve, ms));
+        }
+
+        // 画像をカーソルの位置に挿入する関数(カーソルがtextArea内にある場合のみ挿入し、カーソルがない場合は後続の処理でtextAreaの最後に挿入する)
+        const adjustPositionOfImage = (img) => {
+            const selection = window.getSelection();
+            const textArea = document.getElementById('textArea');
+
+            if (textArea.contains(selection.focusNode)) {
+                const range = selection.getRangeAt(0);
+                range.deleteContents();
+                range.insertNode(img);
+                range.setStartAfter(img);
+                range.setEndAfter(img);
+                selection.removeAllRanges();
+                selection.addRange(range);
+                return true;
+            }
+            return false;
+        }
+
+        // 画像を保存して、その画像をtextAreaに挿入する関数
+        const saveNewImageAndInsert = (image) => {
+            let formData = new FormData();
+            formData.append('csrfmiddlewaretoken', getCookie('csrftoken'));
+            formData.append('comment', '');
+            formData.append('image', image);
+
+            fetch(`/onlineresearchnote/post_image_and_get_url/`, {
+                method: 'POST',
+                headers: {
+                    'X-CSRFToken': getCookie('csrftoken')
+                },
+                credentials: 'include',
+                body: formData
+            })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === 'success') {
+                        insertImageIntoTextArea(data.url);
+                    } else {
+                        console.error('Failed to save content.');
+                    }
+                })
+                .catch(error => {
+                    console.error('Error:', error);
+                    alert('Failed to save content.');
+                });
+        }
+
+        const processData = async (img) => {
+            try {
+                await saveNewImageAndInsert(img);
+
+            } catch (error) {
+                console.error('Failed to process data:', error);
+            }
+        };
+
+        // URLから"/edit/id/"以降のパスを取得する関数
+        const getAfterOnlineresearchnote = (url) => {
+            let result = []
+            let checker = false
+            url.split('/').forEach((el) => {
+                if (el === 'edit') {
+                    checker = true
+                }
+                if (checker) {
+                    result.push(`/${el}`)
+                }
+            })
+            return result.join('');
+        }
+
+        // URLにパラムを追加する関数　/edit/1075/のうようなパスを取得し、ページ遷移の際に情報を引き継ぐ
+        const addUrlParam = () => {
+            const link = document.getElementById('insertImageFromList');
+            const currentUrl = window.location.href;
+            if (currentUrl.includes('?imageIds=')) {
+                // URLにパラムが含まれている場合、"?imageIds="以前のURLを取得して、そのURLの"/edit/id/"部分を画像一覧遷移ボタンのリンクにパラムとして追加する
+                const afterOnlineresearchnote = getAfterOnlineresearchnote(currentUrl.split('?imageIds=')[0]);
+                link.href += afterOnlineresearchnote;
+            } else {
+                const afterOnlineresearchnote = getAfterOnlineresearchnote(currentUrl);
+                link.href += afterOnlineresearchnote;
+            }
+        }
+
+        // パラムURLから画像IDを取得して、ノートページで画像を表示する関数
+        const imageApplicationFromParam = () => {
+            const currentUrl = window.location.href;
+            if (currentUrl.includes('?imageIds=')) {
+                getImagesById(currentUrl.split('?imageIds=')[1].split(','));
+                // (3) ['432', '431', '430']のように編集ページで展開し、getリクエストで画像パスを取得する
+            }
+        }
+
+        // パラムより取得した画像IDを元に、画像を取得して表示する関数
+        const getImagesById = (ids) => {
+            const imagePaths = [];
+            if ((ids.length === 1 && ids[0] === '')) { return };
+            const url = `/onlineresearchnote/get_image_path_by_ids/${ids.join(',')}/`
+            fetch(url, {
+                method: 'GET',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRFToken': getCookie('csrftoken')
+                },
+            })
+                .then(response => response.json())
+                .then(data => {
+                    data['image_urls'].forEach((el) => {
+                        // /media/images/test_image1_ytYjiCH.png　のようなパスが取得される
+                        imagePaths.push(el);
+                    });
+                })
+                .then(() => {
+                    let hasAlreadyInserted = false;
+                    insertImageIntoTextAreaFromImageList(imagePaths, hasAlreadyInserted);
+                })
+                .catch(error => {
+                    console.error('Fetch error:', error);
+                });
+        }
+
+        const insertImageIntoTextAreaFromImageList = (arrOfUrls, hasAlreadyInserted) => {
+            const message = document.getElementById('messageForInsertImages');
+            message.style.display = 'block';
+            document.getElementById('textArea').addEventListener('click', () => {
+                if (hasAlreadyInserted) { return }
+                message.style.display = 'none';
+                arrOfUrls.forEach((url) => {
+                    const img = document.createElement('img');
+                    img.src = url;
+                    const selection = window.getSelection();
+                    const textArea = document.getElementById('textArea');
+                    if (textArea.contains(selection.focusNode)) {
+                        const range = selection.getRangeAt(0);
+                        range.deleteContents();
+                        range.insertNode(img);
+                        range.setStartAfter(img);
+                        range.setEndAfter(img);
+                        selection.removeAllRanges();
+                        selection.addRange(range);
+                    } else {
+                        textArea.appendChild(img);
+                    }
+                });
+
+                // 初期ロード時も高さを更新 20240529追記★
+                updateHeight();
+
+                hasAlreadyInserted = true;
+            });
+        }
+
+        window.addEventListener("load", (event) => {
+            containerObserver();
+            addUrlParam();
+            imageApplicationFromParam();
+        });
+        //********** Cycnus script ends here **********//
+    </script>
+
+    <!--データベースから取得した描画データをCanvasに表示するスクリプト-->
+    <script>
+
+    //ページが読み込まれたときに実行
+        window.onload = function () {
+            adjustImageContainerSize();
+
+        var canvas = document.getElementById('drawingCanvas');
+        var ctx = canvas.getContext('2d');
+        var img = new Image();
+        img.onload = function() {
+            ctx.drawImage(img, 0, 0);  // キャンバスに画像を描画
+        };
+        img.src = "{{ record.drawing_content }}";  // 描画データを設定
+
+        img.onerror = function () {
+            console.error("画像のロードに失敗しました。");
+        };
+
+        //読み込んだImageObjectに対して移動とサイズ変更を適用
+        const elements = document.querySelectorAll('.resizable');
+        elements.forEach((element) => {
+            makeResizableAndDraggable(element);
+        });
+
+        // ページが読み込まれた時に日付を表示
+        showCurrentDate();
+
+        // 初期ロード時も高さを更新
+        updateHeight();
+
+        //白紙のキャンバスを保存（初期化）★
+        saveState()
+
+    };
+    </script>
+
+    <script>
+        function insertTable() {
+            const rows = document.getElementById('rows').value;
+            const columns = document.getElementById('columns').value;
+
+            let tableHTML = '<table>';
+
+            for (let i = 0; i < rows; i++) {
+                tableHTML += '<tr>';
+                for (let j = 0; j < columns; j++) {
+                    tableHTML += '<td></td>'; // 空のセル
+                }
+                tableHTML += '</tr>';
+            }
+
+            tableHTML += '</table>';
+
+            const textArea = document.getElementById('textArea');
+            textArea.innerHTML += tableHTML; // 既存の内容に表を追加
+            /* 2024.05.04 Add */
+            handleInput();
+        }
+    </script>
+
+    <script>
+
+        //改良版
+        function insertImageIntoTextArea(data) {
+            const img = document.createElement('img');
+            img.src = data
+
+            hasAlreadyAdjusted = adjustPositionOfImage(img);
+            if (!hasAlreadyAdjusted) {
+                const targetDom = document.getElementById('editor').querySelector('[id="textArea"], div[contenteditable="true"]');
+                targetDom.appendChild(img);
+            }
+        }
+        // 画像挿入ボタンのクリックイベント
+        document.getElementById('insertImageButton').addEventListener('click', function () {
+            document.getElementById('imageInput').click();
+        });
+
+        // ファイル入力の変更イベント 画像挿入
+        document.getElementById('imageInput').addEventListener('change', function () {
+            if (this.files && this.files[0]) {
+
+                /* 2024.05.04 Add */
+                handleInput();
+
+                //画像挿入関数を呼ぶ前段階の関数
+                processData(this.files[0])
+            }
+
+            // 以下の処理で、同じファイルを選択してもchangeイベントが発火するようにしています。
+            // 必要ない場合は削除してください。
+            const inputFileElement = document.getElementById('imageInput')
+            inputFileElement.value = '';
+        });
+
+        // 今日の日付を取得して表示する
+        function showCurrentDate() {
+            console.log("今日の日付");
+            const today = new Date();
+            const dateString = today.toLocaleDateString();
+
+            // 日付をdivタグに設定
+            document.getElementById('currentDate').textContent = dateString;
+        }
+    </script>
+
+    <!--Canvas描画用-->
+    <script>
+        const textArea = document.getElementById('textArea');
+        const canvas = document.getElementById('drawingCanvas');
+        const colorPicker = document.getElementById('colorPicker');
+        const eraserModeBtn = document.getElementById('eraserModeBtn');
+        let isDrawing = false;
+        let eraserMode = false;
+        let startX = 0;
+        let startY = 0;
+        let canvasHistory = [];
+        let historyIndex = 0;
+        undoDrawing_first_frag = true;
+
+        function getMousePos(canvas, evt) {
+            var rect = canvas.getBoundingClientRect();
+            return {
+                x: evt.clientX - rect.left,
+                y: evt.clientY - rect.top
+            };
+        }
+
+        function getTouchPos(canvas, evt) {
+            var rect = canvas.getBoundingClientRect();
+            return {
+                x: evt.touches[0].clientX - rect.left,
+                y: evt.touches[0].clientY - rect.top
+            };
+        }
+
+        function setupCanvas() {
+            canvas.addEventListener('mousedown', startDrawing);
+            canvas.addEventListener('mousemove', draw);
+            canvas.addEventListener('mouseup', stopDrawing);
+            canvas.addEventListener('mouseout', stopDrawing);
+            canvas.addEventListener('touchstart', startDrawingTouch);
+            canvas.addEventListener('touchmove', drawTouch);
+            canvas.addEventListener('touchend', stopDrawing);
+            document.addEventListener('keydown', undoDrawing);
+
+            // 初期化時に最初の空のキャンバスの状態を保存
+            saveState();
+        }
+
+        function disableCanvasDrawing() {
+            canvas.removeEventListener('mousedown', startDrawing);
+            canvas.removeEventListener('mousemove', draw);
+            canvas.removeEventListener('mouseup', stopDrawing);
+            canvas.removeEventListener('mouseout', stopDrawing);
+            canvas.removeEventListener('touchstart', startDrawingTouch);
+            canvas.removeEventListener('touchmove', drawTouch);
+            canvas.removeEventListener('touchend', stopDrawing);
+            document.removeEventListener('keydown', undoDrawing);
+        }
+
+        function saveState() {
+            historyIndex++;
+            console.log("saveState", historyIndex); // 履歴インデックスをコンソールに出力
+            // 現在のインデックスまでの履歴を保持する
+            canvasHistory = canvasHistory.slice(0, historyIndex);
+            // 現在のキャンバスの状態をデータURLとして保存する
+            canvasHistory.push(canvas.toDataURL());
+            console.log("canvasHistory", canvasHistory); // 履歴インデックスをコンソールに出力
+        }
+
+        function undoDrawing(e) {
+            if (e.ctrlKey && e.key === 'z') {
+
+                //最初のundoは二回引かないといけない
+                if (undoDrawing_first_frag == true) {
+                    historyIndex--;
+                    undoDrawing_first_frag = false;
+                }
+
+                if (historyIndex <= 0) return;
+                historyIndex--;
+                let canvasPic = new Image();
+                canvasPic.src = canvasHistory[historyIndex]; //Canvasデータのロード
+                //ロードが完了したら以下が実行される
+                canvasPic.onload = function () {
+                    ctx.clearRect(0, 0, canvas.width, canvas.height); //一度白紙にする
+                    ctx.drawImage(canvasPic, 0, 0);　//再描画
+                }
+                console.log("undoDrawing", historyIndex); // 履歴インデックスをコンソールに出力
+                console.log("canvasHistory", canvasHistory); // 履歴インデックスをコンソールに出力
+
+            }
+        }
+
+        function startDrawing(e) {
+            isDrawing = true;
+            var pos = getMousePos(canvas, e);
+            startX = pos.x;
+            startY = pos.y;
+            ctx.moveTo(startX, startY);
+            if (eraserMode) {
+                ctx.globalCompositeOperation = 'destination-out';
+                ctx.lineWidth = 10; // 消しゴムの太さを設定
+            } else {
+                ctx.globalCompositeOperation = 'source-over';
+                ctx.strokeStyle = colorPicker.value; // 線の色を設定
+                ctx.lineWidth = 1; // 描画モードの線の太さを設定
+            }
+        }
+
+        function draw(e) {
+            if (!isDrawing) return;
+            var pos = getMousePos(canvas, e);
+            ctx.beginPath();
+            ctx.moveTo(startX, startY);
+            if (e.shiftKey) {
+                // Shiftを押しながらの描画
+                ctx.lineTo(pos.x, startY);
+            } else if (e.ctrlKey) {
+                // Ctrlを押しながらの描画
+                ctx.lineTo(startX, pos.y);
+            } else {
+                // 通常の描画
+                ctx.lineTo(pos.x, pos.y);
+                startX = pos.x; // startXとstartYを更新して連続的な描画を実現
+                startY = pos.y;
+            }
+            ctx.stroke();
+        }
+
+        function startDrawingTouch(e) {
+            e.preventDefault();
+            isDrawing = true;
+            var pos = getTouchPos(canvas, e);
+            startX = pos.x;
+            startY = pos.y;
+            ctx.moveTo(startX, startY);
+            if (eraserMode) {
+                ctx.globalCompositeOperation = 'destination-out';
+                ctx.lineWidth = 10; // 消しゴムの太さを設定
+            } else {
+                ctx.globalCompositeOperation = 'source-over';
+                ctx.strokeStyle = colorPicker.value; // 線の色を設定
+                ctx.lineWidth = 1; // 描画モードの線の太さを設定
+            }
+        }
+
+        function drawTouch(e) {
+            e.preventDefault();
+            if (!isDrawing) return;
+            var pos = getTouchPos(canvas, e);
+            ctx.beginPath();
+            ctx.moveTo(startX, startY);
+            if (e.shiftKey) {
+                // Shiftを押しながらの描画
+                ctx.lineTo(pos.x, startY);
+            } else if (e.ctrlKey) {
+                // Ctrlを押しながらの描画
+                ctx.lineTo(startX, pos.y);
+            } else {
+                // 通常の描画
+                ctx.lineTo(pos.x, pos.y);
+                startX = pos.x; // startXとstartYを更新して連続的な描画を実現
+                startY = pos.y;
+            }
+            ctx.stroke();
+        }
+
+        function stopDrawing() {
+            isDrawing = false;
+            ctx.beginPath();
+            saveState(); // 描画終了時に状態を保存
+        }
+
+        const textModeBtn = document.getElementById('textModeBtn');
+        const drawModeBtn = document.getElementById('drawModeBtn');
+
+        textModeBtn.addEventListener('click', function () {
+            canvas.style.zIndex = 999; //キャンバスは常に全面表示
+            textArea.style.zIndex = 1;
+            textArea.contentEditable = 'true';
+            disableCanvasDrawing();
+            textModeBtn.classList.add('inactive');
+            drawModeBtn.classList.remove('inactive');
+            eraserMode = false; // 消しゴムモードを解除
+            canvas.style.pointerEvents = 'none'; // キャンバスへのインタラクションを無効化する
+            imageContainer.style.pointerEvents = 'auto'; // ImageObjectのインタラクションを有効にする
+        });
+
+        drawModeBtn.addEventListener('click', function () {
+            canvas.style.zIndex = 999;
+            textArea.style.zIndex = 1;
+            textArea.contentEditable = 'false';
+            setupCanvas();
+            drawModeBtn.classList.add('inactive');
+            textModeBtn.classList.remove('inactive');
+            eraserMode = false; // 消しゴムモードを解除
+            canvas.style.pointerEvents = 'auto'; // キャンバスへのインタラクションを有効にする
+            imageContainer.style.pointerEvents = 'none'; // ImageObjectのインタラクションを無効にする
+        });
+
+        setupCanvas(); // キャンバスの初期設定を行う
+    </script>
+
+
+    <style>
+
+        .menu {
+            display: none;
+            position: absolute;
+            top: 0;
+            left: 0;
+            border: 1px solid #000;
+            z-index: 500;
+        }
+
+            .menu button {
+                display: block;
+                width: 100%;
+            }
+    </style>
+
+    <!--ImageObjectを扱うスクリプト-->
+    <script>
+        const fileInput = document.getElementById('fileInput');
+        const imageContainer = document.getElementById('imageContainer');
+        const textArea_image = document.getElementById('textArea'); // 親要素を取得
+
+        function processImageData(file) {
+            let formData = new FormData();
+            formData.append('csrfmiddlewaretoken', getCookie('csrftoken'));
+            formData.append('comment', '');
+            formData.append('image', file);
+
+            fetch(`/onlineresearchnote/post_image_and_get_url/`, {
+                method: 'POST',
+                headers: {
+                    'X-CSRFToken': getCookie('csrftoken')
+                },
+                credentials: 'include',
+                body: formData
+            })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === 'success') {
+                        displayImage(data.url);
+                    } else {
+                        console.error('Failed to save content.');
+                    }
+                })
+                .catch(error => {
+                    console.error('Error:', error);
+                    alert('Failed to save content.');
+                });
+        }
+
+        fileInput.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (file) {
+                processImageData(file);
+            }
+        });
+
+        function displayImage(url) {
+            const resizableElement = document.createElement('div');
+            resizableElement.classList.add('resizable');
+
+            const elementWidth = 200;
+            const elementHeight = 200;
+            resizableElement.style.width = `${elementWidth}px`;
+            resizableElement.style.height = `${elementHeight}px`;
+            resizableElement.style.zIndex = 200;
+            resizableElement.style.position = 'absolute';  // 位置を絶対指定に変更
+            resizableElement.style.left = '10px';
+            resizableElement.style.top = '10px';
+
+            resizableElement.innerHTML = `
+                            <img src="${url}" alt="Uploaded Image">
+                            <div class="handle br"></div>
+                            <div class="menu">
+                                <button class="btn btn-danger delete-btn">削除</button>
+                                <button class="btn btn-primary front-btn">前面に表示</button>
+                                <button class="btn btn-secondary back-btn">背面に表示</button>
+                            </div>`;
+            imageContainer.appendChild(resizableElement);
+            makeResizableAndDraggable(resizableElement);
+        }
+
+        function makeResizableAndDraggable(element) {
+            const handle = element.querySelector('.handle.br');
+            const menu = element.querySelector('.menu');
+            let isDragging = false;
+            let dragStartX, dragStartY, startLeft, startTop;
+
+            element.addEventListener('mousedown', (e) => {
+                if (e.target === handle) return;
+                isDragging = true;
+                dragStartX = e.clientX; //現在のマウスの位置を取得
+                dragStartY = e.clientY; //現在のマウスの位置を取得
+                const rect = element.getBoundingClientRect();
+                startLeft = rect.left - imageContainer.getBoundingClientRect().left;
+                startTop = rect.top - imageContainer.getBoundingClientRect().top;
+                e.preventDefault();
+            });
+
+            document.addEventListener('mousemove', (e) => {
+
+                //ドラッグしている時の処理
+                if (isDragging) {
+                    const dx = e.clientX - dragStartX;
+                    const dy = e.clientY - dragStartY;
+                    let newLeft = startLeft + dx;
+                    let newTop = startTop + dy;
+                    
+                    // 現在のドラッグしている画像の位置を取得して表示
+                    const rect = element.getBoundingClientRect();
+                    console.log(`Top-left: (${rect.left}, ${rect.top})`); //画面の左端から画像の左までの距離、画面の上端から画像の上端までの距離
+                    console.log(`Bottom-right: (${rect.right}, ${rect.bottom})`); //画面の右端から画像の右端までの距離、画面の下端から画像の下端までの距離
+
+                    // 追記した部分：imageContainerの左上と右下の位置を取得して表示
+                    const containerRect = imageContainer.getBoundingClientRect();
+                    console.log(`Container Top-left: (${containerRect.left}, ${containerRect.top})`);
+                    console.log(`Container Bottom-left: (${containerRect.right}, ${containerRect.bottom})`);
+
+
+                    if (rect.left > containerRect.left && rect.right < containerRect.right && rect.top > containerRect.top && rect.bottom < containerRect.bottom) {
+                        //枠の中なら動く
+                        //画像の位置を変更する処理
+                        element.style.left = `${newLeft}px`;
+                        element.style.top = `${newTop}px`;
+                    }
+                    else {
+                        console.log("枠外には動かせません");
+
+                    }
+                }
+            });
+
+            document.addEventListener('mouseup', () => {
+                isDragging = false;
+
+                // ドラッグ終了時にも位置を表示
+                const rect = element.getBoundingClientRect();
+                console.log(`Final position - Top-left: (${rect.left}, ${rect.top})`);
+                console.log(`Final position - Bottom-right: (${rect.right}, ${rect.bottom})`);
+
+                // 追記した部分：ドラッグ終了時にもimageContainerの左上と右下の位置を表示
+                const containerRect = imageContainer.getBoundingClientRect();
+                console.log(`Final Container Top-left: (${containerRect.left}, ${containerRect.top})`);
+                console.log(`Final Container Bottom-right: (${containerRect.right}, ${containerRect.bottom})`);
+
+            });
+
+            let isResizing = false;
+            let resizeStartX, resizeStartY, startWidth, startHeight;
+            let aspectRatio;
+
+            handle.addEventListener('mousedown', (e) => {
+                isResizing = true;
+                resizeStartX = e.clientX;
+                resizeStartY = e.clientY;
+                startWidth = parseInt(window.getComputedStyle(element).width);
+                startHeight = parseInt(window.getComputedStyle(element).height);
+                const img = element.querySelector('img');
+                aspectRatio = img.naturalWidth / img.naturalHeight;
+
+                e.preventDefault();
+            });
+
+            document.addEventListener('mousemove', (e) => {
+                if (isResizing) {
+                    const dx = e.clientX - resizeStartX;
+                    let newWidth = startWidth + dx;
+                    let newHeight = newWidth / aspectRatio;
+
+                    // 親要素の境界をチェック ★ここも書き換える
+                    if (element.offsetLeft + newWidth > textArea_image.clientWidth) {
+                        newWidth = textArea_image.clientWidth - element.offsetLeft;
+                        newHeight = newWidth / aspectRatio;
+                    }
+                    if (element.offsetTop + newHeight > textArea_image.clientHeight) {
+                        newHeight = textArea_image.clientHeight - element.offsetTop;
+                        newWidth = newHeight * aspectRatio;
+                    }
+
+                    element.style.width = `${newWidth}px`;
+                    element.style.height = `${newHeight}px`;
+                }
+            });
+
+            document.addEventListener('mouseup', () => {
+                isResizing = false;
+            });
+
+            element.addEventListener('click', (e) => {
+                if (e.target !== handle) {
+                    menu.style.display = 'block';
+                }
+            });
+
+            document.addEventListener('click', (e) => {
+                if (!element.contains(e.target) && e.target !== element) {
+                    menu.style.display = 'none';
+                }
+            });
+
+            element.addEventListener('mouseenter', () => {
+                menu.style.display = 'block';
+            });
+
+            element.addEventListener('mouseleave', () => {
+                menu.style.display = 'none';
+            });
+
+            const deleteBtn = element.querySelector('.delete-btn');
+            const frontBtn = element.querySelector('.front-btn');
+            const backBtn = element.querySelector('.back-btn');
+
+            deleteBtn.addEventListener('click', () => {
+                element.remove();
+            });
+
+            frontBtn.addEventListener('click', () => {
+                let zIndex = parseInt(window.getComputedStyle(element).zIndex);
+                if (zIndex < 300) {
+                    element.style.zIndex = zIndex + 1;
+                }
+                else {
+                    console.log("これ以上前面に移動はできません")
+                }
+            });
+
+            backBtn.addEventListener('click', () => {
+                let zIndex = parseInt(window.getComputedStyle(element).zIndex);
+                if (zIndex > 100) {
+                    element.style.zIndex = zIndex - 1;
+                }
+                else {
+                    console.log("これ以上背面に移動はできません")
+                }
+            });
+        }
+
+        function getCookie(name) {
+            let cookieValue = null;
+            if (document.cookie && document.cookie !== '') {
+                const cookies = document.cookie.split(';');
+                for (let i = 0; i < cookies.length; i++) {
+                    const cookie = cookies[i].trim();
+                    if (cookie.substring(0, name.length + 1) === (name + '=')) {
+                        cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
+                        break;
+                    }
+                }
+            }
+            return cookieValue;
+        }
+
+
+        window.onresize = () => {
+            adjustImageContainerSize();
+        };
+
+        function adjustImageContainerSize() {
+            imageContainer.style.width = `${textArea_image.clientWidth}px`;
+            imageContainer.style.height = `${textArea_image.clientHeight}px`;
+        }
+    </script>
+
+    <!--作成/編集したrecordをサーバーへアップロードするスクリプト-->
+    <script>
+        document.getElementById('saveBtn').addEventListener('click', async function () {
+            this.disabled = true;  // ボタンを無効化
+
+            // EditorJSのデータを取得
+            const editorData = await editor.save();
+            const editorDataString = JSON.stringify(editorData); //ここにEditorJSのデータが入る
+
+            const textContent = document.getElementById('textArea').innerHTML; //ココには何も入力しない
+            const imageDataUrl = document.getElementById('drawingCanvas').toDataURL();
+
+            //新規と編集判断用
+            const isEdit = "{{ is_edit|yesno:'true,false' }}";
+            console.log("isEdit:", isEdit);  // デバッグ用
+
+            if (isEdit === "true") {
+                researchAt = document.getElementById('research_at').innerText;  // 編集時は<p>タグから日付を取得
+            } else {
+                researchAt = document.getElementById('research_at').value;  // 新規作成時は<input>タグから日付を取得
+            }
+            console.log("researchAt:", researchAt);  // デバッグ用
+
+            const imageContainerHTML = imageContainer.innerHTML; //画像保存用
+
+            const pk = this.getAttribute('data-pk');  // 保存ボタンから本recordのpkを取得
+
+            const newFlag = true; //新しいrecordを作るのでFlagをtrueにする
+
+            const navigationButton = document.getElementById('buttonToTriggerNavigation')
+            const navigationButtonHasBeenClicked = navigationButton.getAttribute('hasclicked')
+
+            // URL設定: 新規作成の場合は新規エンドポイント、更新の場合は既存のエンドポイント
+            const url = pk ? `/save_experiment_note/${pk}/` : '/save_experiment_note/';
+
+            fetch(url, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRFToken': getCookie('csrftoken')
+                },
+                body: JSON.stringify({
+                    textContent,
+                    imageDataUrl,
+                    researchAt,
+                    editorData: editorDataString,  // EditorJSのデータを含める
+                    newFlag,
+                    image_div_content: imageContainerHTML //画像
+                })
+            })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === 'success') {
+                        console.log('Content saved with ID:', data.note_id);
+                        idTracker(data.note_id);
+
+                        // 一覧より挿入ボタンがクリックされていた場合、リダイレクトを行わない
+                        if (navigationButtonHasBeenClicked === 'true') {
+                            // console.log('navigation button has been clicked');
+                        } else {
+                            window.location.href = `/onlineresearchnote/edit/${data.note_id}/`; // 成功時に新しいIDでリダイレクト
+                        }
+
+                    } else {
+                        console.error('Failed to save content.');
+                        this.disabled = false;  // 失敗時にボタンを再び有効化
+                    }
+                })
+                .catch(error => {
+                    console.error('Error:', error);
+                    this.disabled = false;  // エラー時にボタンを再び有効化
+                });
+        });
+
+        function getCookie(name) {
+            let cookieValue = null;
+            if (document.cookie && document.cookie !== '') {
+                const cookies = document.cookie.split(';');
+                for (let i = 0; i < cookies.length; i++) {
+                    const cookie = cookies[i].trim();
+                    if (cookie.substring(0, name.length + 1) === (name + '=')) {
+                        cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
+                        break;
+                    }
+                }
+            }
+            return cookieValue;
+        }
+    </script>
+
+    <script>
+        // Ctrl + S を押したときのイベントリスナーを追加
+        document.addEventListener('keydown', function (event) {
+            // Ctrlキーが押されているかどうかと、'S'キーが押されたかをチェック
+            if (event.ctrlKey && event.key === 's') {
+                event.preventDefault();  // ブラウザのデフォルトの挙動を停止
+                document.getElementById('saveBtn').click();  // ボタンをプログラム的にクリック
+            }
+        });
+
+        function saveAction() {
+            // ここに保存処理を実装
+            alert('保存されました！');
+        }
+    </script>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.0/dist/js/bootstrap.bundle.min.js"></script>
+
+</body>
+ {% endblock %}
