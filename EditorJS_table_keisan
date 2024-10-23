@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Editor.js表計算機能統合</title>
+    <style>
+        table {
+            border-collapse: collapse;
+            margin-bottom: 20px;
+        }
+
+        table, th, td {
+            border: 1px solid black;
+            padding: 10px;
+        }
+
+        .tc-cell {
+            width: 100px;
+            padding: 5px;
+            text-align: center;
+        }
+
+        /* 計算式が入力されているセルの背景色 */
+        .formula-cell {
+            background-color: #ffffe0; /* 薄い黄色 */
+        }
+
+        /* セルが参照されているときに赤く光る */
+        .highlight-cell {
+            background-color: red !important;
+        }
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/@editorjs/editorjs@latest"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@editorjs/table@latest"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/mathjs/11.5.0/math.min.js"></script>
+</head>
+<body>
+    <h2>Editor.jsテーブル機能で表計算を実現</h2>
+
+    <div id="editorjs"></div>
+
+    <h3>結果:</h3>
+    <p id="result"></p>
+
+    <script>
+        let editor;
+        let highlightedCells = []; // ハイライトされたセルを追跡
+
+        document.addEventListener('DOMContentLoaded', () => {
+            // Editor.js の初期化
+            editor = new EditorJS({
+                holder: 'editorjs',
+                tools: {
+                    table: {
+                        class: Table,
+                        inlineToolbar: true,
+                    },
+                },
+                onChange: () => {
+                    assignTableCellIds(); // テーブルが変更されたときにIDを割り当てる
+                }
+            });
+
+            // テーブルやセルが生成されたらイベントリスナーを割り当てるためにMutationObserverを使用
+            const targetNode = document.getElementById('editorjs');
+            const config = { childList: true, subtree: true };
+
+            const observer = new MutationObserver((mutationsList, observer) => {
+                for (const mutation of mutationsList) {
+                    if (mutation.type === 'childList') {
+                        assignTableCellIds(); // 新しく生成されたセルにイベントリスナーを割り当てる
+                    }
+                }
+            });
+
+            observer.observe(targetNode, config);
+
+            editor.isReady
+                .then(() => {
+                    assignTableCellIds(); // 初期化時にIDを割り当てる
+                })
+                .catch((reason) => {
+                    console.error(`Editor.js initialization failed: ${reason}`);
+                });
+        });
+
+        // テーブルセルに ID とイベントを割り当てる関数
+        function assignTableCellIds() {
+            const tables = document.querySelectorAll('.tc-table'); // テーブルを取得
+            tables.forEach((table, tableIndex) => {
+                const rows = table.querySelectorAll('.tc-row'); // 行を取得
+                rows.forEach((row, rowIndex) => {
+                    const cells = row.querySelectorAll('.tc-cell'); // 行内のセルを取得
+                    cells.forEach((cell, colIndex) => {
+                        // 列のインデックスをアルファベットに変換（0 -> A, 1 -> B, 2 -> C）
+                        const columnLetter = String.fromCharCode(65 + colIndex);
+                        const cellId = `table${tableIndex + 1}_${columnLetter}${rowIndex + 1}`; // ID生成（例: table1_A1）
+                        cell.setAttribute('id', cellId);
+                        cell.setAttribute('data-formula', '');
+                        cell.setAttribute('contenteditable', 'true');
+                        cell.setAttribute('onfocus', 'showFormula(this)'); // onfocusを直接埋め込む
+
+                        // フォーカスとフォーカスアウト時のイベントリスナーを追加
+                        cell.addEventListener('focus', () => showFormula(cell)); // フォーカス時に計算式を表示
+                        cell.addEventListener('blur', () => calculateCell(cell)); // フォーカスが外れたら計算し、計算式を保存
+                    });
+                });
+            });
+        }
+
+        // セルの値を取得する関数
+        function getCellValue(cellId) {
+            const cell = document.getElementById(cellId);
+            if (cell) {
+                const value = cell.textContent.trim();
+                return isNaN(parseFloat(value)) ? 0 : parseFloat(value); // NaN だった場合は0にする
+            }
+            console.error(`Cell with ID ${cellId} not found.`);
+            return 0;
+        }
+
+        // セルがフォーカスされたときに保持されている計算式を表示
+        function showFormula(cell) {
+            //console.log("showFormula");
+            const formula = cell.getAttribute('data-formula');
+            if (formula && formula !== "") {
+                cell.textContent = formula; // 保持された計算式を表示
+            }
+
+            highlightReferencedCells(formula); // ハイライト表示
+        }
+
+        // セルがフォーカスを外れたときに計算を行い、全ての計算式を再評価
+        function calculateCell(cell) {
+            // textContentを使用してcell内の純粋なテキストを取得
+            let value = cell.textContent.trim(); // div内のテキストをトリムして取得
+
+            clearAllHighlights();  // すべてのハイライトをクリア
+
+            console.log('値:', value); // 取得した値を確認
+
+            if (value && value.startsWith('=')) {
+                const formula = value;
+                console.log("data-formulaに保存中:", formula);
+                cell.setAttribute('data-formula', formula); // 計算式を保存
+                console.log('保存された data-formula:', cell.getAttribute('data-formula')); // 保存後の確認
+                cell.classList.add('formula-cell');
+
+                highlightReferencedCells(formula); // ハイライト
+            }
+
+            updateAllFormulas(); // 計算の再評価
+        }
+
+
+        // 全ての計算式を再評価して更新
+        function updateAllFormulas() {
+            const allCells = document.querySelectorAll('div[data-formula]');
+            allCells.forEach(cell => {
+                const formula = cell.getAttribute('data-formula');
+                if (formula && formula !== "") {
+                    let formulaWithoutEqual = formula.substring(1); // "="を取り除く
+
+                    // SUM 関数の処理
+                    formulaWithoutEqual = formulaWithoutEqual.replace(/SUM\((\w+\d+):(\w+\d+)\)/g, function (match, startCell, endCell) {
+                        const tableId = startCell.split('_')[0]; // テーブルIDを取得
+                        return sumRange(startCell, endCell, tableId); // tableId を使って正しいセル範囲を計算
+                    });
+
+                    // 他のテーブルのセルも含むセル参照を動的に置換
+                    formulaWithoutEqual = formulaWithoutEqual.replace(/table\d+_[A-Z]\d+/g, function (match) {
+                        return getCellValue(match); // セルID（例: table1_A1）を値に置換
+                    });
+
+                    try {
+                        const result = math.evaluate(formulaWithoutEqual);
+                        cell.textContent = result; // 計算結果をセルに表示
+                    } catch (e) {
+                        cell.textContent = "エラー: " + e.message; // 式が無効の場合にエラーメッセージを表示
+                    }
+                }
+            });
+        }
+
+        // 参照しているセルをハイライトする関数
+        function highlightReferencedCells(formula) {
+            if (!formula || !formula.startsWith('=')) return;
+
+            // 参照されているセルIDを正規表現で抽出
+            const referencedCells = formula.match(/table\d+_[A-Z]\d+/g);
+            if (referencedCells) {
+                referencedCells.forEach(cellId => {
+                    const cell = document.getElementById(cellId);
+                    if (cell) {
+                        cell.classList.add('highlight-cell'); // 参照されているセルをハイライト
+                        highlightedCells.push(cellId); // ハイライトされたセルを追跡
+                    }
+                });
+            }
+        }
+
+        // 全てのセルからハイライトを解除する関数
+        function clearAllHighlights() {
+            highlightedCells.forEach(cellId => {
+                const cell = document.getElementById(cellId);
+                if (cell) {
+                    cell.classList.remove('highlight-cell');
+                }
+            });
+            highlightedCells = []; // ハイライトされたセルの追跡をリセット
+        }
+
+    </script>
+</body>
+</html>
